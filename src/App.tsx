@@ -242,12 +242,23 @@ ${renderedHtml}
   }, [openFiles]);
 
   const handleFileSwitch = useCallback((index: number) => {
-    if (index >= 0 && index < openFiles.length) {
+    if (index >= 0 && index < openFiles.length && index !== activeFileIndex) {
+      // 先保存当前文件的内容
+      if (activeFileIndex >= 0 && activeFileIndex < openFiles.length) {
+        const updatedFiles = [...openFiles];
+        updatedFiles[activeFileIndex] = {
+          ...updatedFiles[activeFileIndex],
+          content: content
+        };
+        setOpenFiles(updatedFiles);
+      }
+      
+      // 切换到新文件
       setActiveFileIndex(index);
       setContent(openFiles[index].content);
       setCurrentFilePath(openFiles[index].path);
     }
-  }, [openFiles]);
+  }, [openFiles, activeFileIndex, content]);
 
   const handleFileClose = useCallback((index: number, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -256,7 +267,7 @@ ${renderedHtml}
     
     if (newFiles.length === 0) {
       setActiveFileIndex(-1);
-      setContent(defaultContent);
+      setContent('');
       setCurrentFilePath(null);
     } else if (index === activeFileIndex) {
       const newIndex = index > 0 ? index - 1 : 0;
@@ -271,11 +282,11 @@ ${renderedHtml}
   useEffect(() => {
     if (typeof window !== 'undefined' && window.electronAPI) {
       window.electronAPI.onMenuNewFile(() => {
-        const newFile = { path: '', content: defaultContent, name: 'Untitled' };
+        const newFile = { path: '', content: '', name: 'Untitled' };
         const newFiles = [...openFiles, newFile];
         setOpenFiles(newFiles);
         setActiveFileIndex(newFiles.length - 1);
-        setContent(defaultContent);
+        setContent('');
         setCurrentFilePath(null);
       });
 
