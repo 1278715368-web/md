@@ -1,5 +1,6 @@
-/* MD Editor - macOS Style */
+/* MD Editor - Enhanced macOS Style */
 @import 'prism-theme.css';
+@import 'katex/dist/katex.min.css';
 
 :root {
   /* Light mode colors */
@@ -34,6 +35,19 @@
   --accent-hover: #409cff;
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Sepia mode */
+.sepia {
+  --bg-primary: #f4ecd8;
+  --bg-secondary: #e8dcc8;
+  --bg-tertiary: #d9ccb8;
+  --text-primary: #5c4b37;
+  --text-secondary: #8b7355;
+  --text-tertiary: #6b5344;
+  --border-color: #c4b39a;
+  --accent-color: #8b4513;
+  --accent-hover: #a0522d;
 }
 
 * {
@@ -72,16 +86,9 @@ body {
   transition: background-color var(--transition-normal);
 }
 
-.dark .titlebar {
+.dark .titlebar,
+.sepia .titlebar {
   background: var(--bg-tertiary);
-}
-
-/* Editor container */
-.editor-container {
-  flex: 1;
-  overflow: hidden;
-  background: var(--bg-primary);
-  transition: background-color var(--transition-normal);
 }
 
 /* File tabs */
@@ -168,6 +175,13 @@ body {
   -webkit-app-region: no-drag;
 }
 
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .view-mode-buttons {
   display: flex;
   gap: 4px;
@@ -201,10 +215,120 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: none;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.toolbar-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-primary);
+}
+
+.theme-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.font-size-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.font-size-control button {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.font-size-control button:hover {
+  background: var(--accent-color);
+  color: white;
+}
+
+/* Find Replace Panel */
+.find-replace-panel {
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.find-row,
+.replace-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.find-row:last-child,
+.replace-row:last-child {
+  margin-bottom: 0;
+}
+
+.find-replace-panel input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+}
+
+.find-replace-panel input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.find-replace-panel button {
+  padding: 6px 12px;
+  border: none;
+  background: var(--accent-color);
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.find-replace-panel button:hover {
+  background: var(--accent-hover);
+}
+
+/* Editor container */
+.editor-container {
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg-primary);
+  transition: background-color var(--transition-normal);
+}
+
 /* Editor layout - different view modes */
 .editor-layout {
   display: flex;
-  height: calc(100vh - 156px);
+  height: 100%;
   gap: 1px;
   background: var(--border-color);
 }
@@ -262,7 +386,6 @@ body {
   outline: none;
   resize: none;
   font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
-  font-size: 14px;
   line-height: 1.6;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -271,6 +394,41 @@ body {
 
 .markdown-editor::placeholder {
   color: var(--text-tertiary);
+}
+
+/* TOC */
+.toc {
+  background: var(--bg-secondary);
+  padding: 16px;
+  border-radius: var(--radius-md);
+  margin-bottom: 20px;
+  border: 1px solid var(--border-color);
+}
+
+.toc h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.toc ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.toc li {
+  margin: 4px 0;
+}
+
+.toc a {
+  color: var(--accent-color);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.toc a:hover {
+  text-decoration: underline;
 }
 
 /* Markdown body - preview pane */
@@ -286,6 +444,18 @@ body {
 
 .markdown-body:focus {
   outline: none;
+}
+
+/* KaTeX styles */
+.katex-block {
+  overflow-x: auto;
+  margin: 1em 0;
+  text-align: center;
+}
+
+.katex-error {
+  color: #e45649;
+  font-family: monospace;
 }
 
 /* Typography */
@@ -481,6 +651,15 @@ body {
   font-size: 11px;
 }
 
+.view-mode-label {
+  margin-left: auto;
+  margin-right: 12px;
+}
+
+.history-label {
+  color: var(--text-tertiary);
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;
@@ -505,7 +684,8 @@ body {
   background: rgba(0, 122, 255, 0.3);
 }
 
-.dark ::selection {
+.dark ::selection,
+.sepia ::selection {
   background: rgba(10, 132, 255, 0.4);
 }
 
