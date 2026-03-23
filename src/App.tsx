@@ -94,7 +94,7 @@ const katexPlugin = (md: MarkdownIt) => {
       end++;
     }
 
-    if (!found || silent || end === pos + 1) return found;
+    if (!found || end === pos + 1) return false;
 
     if (!silent) {
       const token = state.push('katex_inline', 'span', 0);
@@ -224,12 +224,18 @@ const generateTOC = (content: string): string => {
 };
 
 type Theme = 'light' | 'dark' | 'sepia';
+type EditorFile = { path: string; content: string; name: string };
+
+const getFileName = (filePath: string | null) => {
+  if (!filePath) return 'Untitled';
+  return filePath.split('/').pop() || 'Untitled';
+};
 
 function App() {
   const [content, setContent] = useState(defaultContent);
   const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'split' | 'editor' | 'preview'>('split');
-  const [openFiles, setOpenFiles] = useState<Array<{path: string, content: string, name: string}>>([]);
+  const [openFiles, setOpenFiles] = useState<EditorFile[]>([]);
   const [activeFileIndex, setActiveFileIndex] = useState<number>(-1);
   const [showFindReplace, setShowFindReplace] = useState(false);
   const [findText, setFindText] = useState('');
@@ -250,6 +256,22 @@ function App() {
 
   const toc = generateTOC(content);
   const renderedHtml = md.render(contentWithIds);
+
+  const buildFilesWithCurrentSnapshot = useCallback((): EditorFile[] => {
+    const files = [...openFiles];
+
+    if (activeFileIndex >= 0 && activeFileIndex < files.length) {
+      files[activeFileIndex] = {
+        ...files[activeFileIndex],
+        path: currentFilePath ?? files[activeFileIndex].path,
+        name: getFileName(currentFilePath ?? files[activeFileIndex].path),
+        content,
+      };
+      return files;
+    }
+
+    return [{ path: currentFilePath ?? '', content, name: getFileName(currentFilePath) }, ...files];
+  }, [openFiles, activeFileIndex, currentFilePath, content]);
 
 
   // Save to history
@@ -443,7 +465,7 @@ ${renderedHtml}
     if (typeof window !== 'undefined' && window.electronAPI) {
       window.electronAPI.onMenuNewFile(() => {
         const newFile = { path: '', content: '', name: 'Untitled' };
-        const newFiles = [...openFiles, newFile];
+        const newFiles = [...buildFilesWithCurrentSnapshot(), newFile];
         setOpenFiles(newFiles);
         setActiveFileIndex(newFiles.length - 1);
         setContent('');
@@ -451,14 +473,16 @@ ${renderedHtml}
       });
 
       window.electronAPI.onFileOpened(({ content: fileContent, filePath }) => {
-        const fileName = filePath.split('/').pop() || 'Untitled';
-        const existingIndex = openFiles.findIndex(f => f.path === filePath);
+        const fileName = getFileName(filePath);
+        const files = buildFilesWithCurrentSnapshot();
+        const existingIndex = files.findIndex(f => f.path === filePath);
         
         if (existingIndex >= 0) {
           setActiveFileIndex(existingIndex);
-          setContent(openFiles[existingIndex].content);
+          setOpenFiles(files);
+          setContent(files[existingIndex].content);
         } else {
-          const newFiles = [...openFiles, { path: filePath, content: fileContent, name: fileName }];
+          const newFiles = [...files, { path: filePath, content: fileContent, name: fileName }];
           setOpenFiles(newFiles);
           setActiveFileIndex(newFiles.length - 1);
           setContent(fileContent);
@@ -500,7 +524,7 @@ ${renderedHtml}
         window.electronAPI.removeAllListeners('menu-export-html');
       };
     }
-  }, [content, currentFilePath, openFiles, recentFiles, exportHtml]);
+  }, [content, currentFilePath, recentFiles, exportHtml, buildFilesWithCurrentSnapshot]);
 
   const handleFileSwitch = useCallback((index: number) => {
     if (index >= 0 && index < openFiles.length && index !== activeFileIndex) {

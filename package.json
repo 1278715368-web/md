@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron . --dev\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:mac": "vite build && electron-builder --mac"
   },
