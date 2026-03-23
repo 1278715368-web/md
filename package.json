@@ -47,6 +47,7 @@
     }
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^25.5.0",
     "@types/prismjs": "^1.26.6",
@@ -61,9 +62,17 @@
     "wait-on": "^9.0.4"
   },
   "dependencies": {
+    "js-yaml": "^4.1.1",
     "katex": "^0.16.39",
     "markdown-it": "^14.1.1",
+    "markdown-it-emoji": "^3.0.0",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-mark": "^4.0.0",
+    "markdown-it-sub": "^2.0.0",
+    "markdown-it-sup": "^2.0.0",
+    "markdown-it-task-lists": "^2.1.1",
     "marked": "^17.0.4",
+    "mermaid": "^11.13.0",
     "prismjs": "^1.30.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"

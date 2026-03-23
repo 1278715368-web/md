@@ -1,6 +1,6 @@
 # MD Editor
 
-一个精美的Markdown编辑器，灵感来源于Typora，采用Electron + React + TypeScript构建。
+一个精美的 Markdown 编辑器，灵感来源于 Typora，采用 Electron + React + TypeScript 构建。
 
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-blue)
@@ -18,11 +18,24 @@
 - 自动保存每个文件的编辑状态
 
 ### ✍️ 编辑体验
-- 类似Typora的所见即所得编辑
-- 完整的Markdown语法支持
-- 代码语法高亮（支持JavaScript、TypeScript、Python、CSS等）
-- Tab键缩进支持
-- 中文输入法完美支持
+- 类似 Typora 的实时预览写作体验
+- 首页内置完整功能案例，打开即可验证主要能力
+- 多标签文档切换，首次 `Cmd + N` 不再丢失当前内容
+- 查找替换、字号切换、浅色 / 深色 / Sepia 主题
+- Tab 键缩进支持
+
+### 🧩 Markdown 扩展
+- 标题、引用、列表、表格、删除线、代码块、自动链接
+- 任务列表，支持在预览区直接勾选并回写 Markdown
+- 脚注 `[^1]`
+- 目录语法 `[toc]`
+- YAML Front Matter
+- 高亮 `==text==`
+- 下标 `H~2~O` 与上标 `x^2^`
+- Emoji 短码 `:smile:`
+- 行内公式与块公式（KaTeX）
+- Mermaid 代码块图表渲染
+- 原生 HTML、图片粘贴、图片拖拽插入
 
 ### 🎯 macOS原生体验
 - 符合Apple Human Interface Guidelines
@@ -32,26 +45,29 @@
 - 流畅的动画效果
 
 ### 📤 导出功能
-- 导出为HTML文件
-- 导出为PDF文件
+- 导出为 HTML 文件
+- 导出为 PDF 文件
+- 导出为 Word 文件
 
 ## 技术栈
 
 - **框架**: Electron 41
 - **前端**: React 19 + TypeScript
 - **构建工具**: Vite 8
-- **Markdown解析**: markdown-it
+- **Markdown解析**: markdown-it + 扩展插件
 - **代码高亮**: Prism.js
+- **数学公式**: KaTeX
+- **图表**: Mermaid
 
 ## 安装
 
 ### 从DMG安装
-1. 下载 `MD Editor-1.0.0-arm64.dmg`
+1. 下载 `release/MD Editor-1.0.0-arm64.dmg`
 2. 双击打开DMG文件
 3. 将MD Editor拖入Applications文件夹
 
 ### 从ZIP安装
-1. 下载 `MD Editor-1.0.0-arm64-mac.zip`
+1. 下载 `release/MD Editor-1.0.0-arm64-mac.zip`
 2. 解压缩
 3. 将 `MD Editor.app` 移动到Applications文件夹
 
@@ -85,10 +101,12 @@ npm run electron:build:mac
 
 ```
 md-editor/
+├── TYPORA_PARITY_PLAN.md  # Typora 功能对齐计划与进度
 ├── src/                    # React前端源代码
 │   ├── App.tsx            # 主应用组件
 │   ├── main.tsx           # React入口
-│   └── styles/            # 样式文件
+│   ├── styles/            # 样式文件
+│   └── types/             # 本地类型声明
 ├── electron/              # Electron主进程
 │   ├── main.js            # 主进程入口
 │   └── preload.js         # 预加载脚本
@@ -107,6 +125,11 @@ md-editor/
 | `Cmd + Shift + S` | 另存为 |
 | `Cmd + P` | 导出PDF |
 | `Tab` | 缩进 |
+
+## 当前状态
+
+- 已完成一轮 Typora 常用 Markdown 能力补齐，详细清单见 [TYPORA_PARITY_PLAN.md](./TYPORA_PARITY_PLAN.md)
+- 仍待继续实现的高级能力包括：表格编辑工具栏、Typora 式行内元素展开编辑、偏好设置面板等
 
 ## 系统要求
 

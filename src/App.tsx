@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import MarkdownIt from 'markdown-it';
+import markdownItFootnote from 'markdown-it-footnote';
+import markdownItTaskLists from 'markdown-it-task-lists';
+import markdownItSub from 'markdown-it-sub';
+import markdownItSup from 'markdown-it-sup';
+import markdownItMark from 'markdown-it-mark';
+import { full as markdownItEmojiFull } from 'markdown-it-emoji';
 import Prism from 'prismjs';
 import katex from 'katex';
+import mermaid from 'mermaid';
+import { load as loadYaml } from 'js-yaml';
 import 'prismjs/components/prism-javascript';
 import 'prismjs/components/prism-typescript';
 import 'prismjs/components/prism-python';
@@ -21,10 +29,137 @@ declare global {
       onMenuSaveFile: (callback: () => void) => void;
       onMenuSaveAsFile: (callback: () => void) => void;
       onMenuExportHtml: (callback: () => void) => void;
+      openExternal: (url: string) => Promise<void>;
       removeAllListeners: (channel: string) => void;
     };
   }
 }
+
+type FrontMatterValue = string | number | boolean | null | FrontMatterValue[] | { [key: string]: unknown };
+
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+const slugifyHeading = (text: string) =>
+  text
+    .toLowerCase()
+    .trim()
+    .replace(/<[^>]+>/g, '')
+    .replace(/[^\w\u4e00-\u9fa5-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+const stringifyFrontMatterValue = (value: FrontMatterValue): string => {
+  if (Array.isArray(value)) {
+    return value.map(stringifyFrontMatterValue).join(', ');
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.entries(value)
+      .map(([key, nestedValue]) => `${key}: ${stringifyFrontMatterValue(nestedValue as FrontMatterValue)}`)
+      .join(', ');
+  }
+
+  return value == null ? '' : String(value);
+};
+
+const extractFrontMatter = (source: string) => {
+  const match = source.match(/^---\n([\s\S]*?)\n---\n*/);
+
+  if (!match) {
+    return {
+      bodyContent: source,
+      frontMatterHtml: '',
+    };
+  }
+
+  const rawFrontMatter = match[1];
+  const bodyContent = source.slice(match[0].length);
+
+  try {
+    const parsed = loadYaml(rawFrontMatter);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const rows = Object.entries(parsed as Record<string, FrontMatterValue>)
+        .map(
+          ([key, value]) =>
+            `<div class="front-matter-row"><span class="front-matter-key">${escapeHtml(
+              key
+            )}</span><span class="front-matter-value">${escapeHtml(stringifyFrontMatterValue(value))}</span></div>`
+        )
+        .join('');
+
+      return {
+        bodyContent,
+        frontMatterHtml: `<section class="front-matter"><h3>Front Matter</h3>${rows}</section>`,
+      };
+    }
+  } catch {
+    // Keep raw front matter visible if YAML parsing fails.
+  }
+
+  return {
+    bodyContent,
+    frontMatterHtml: `<section class="front-matter"><h3>Front Matter</h3><pre>${escapeHtml(rawFrontMatter)}</pre></section>`,
+  };
+};
+
+const generateTOCHtml = (content: string): string => {
+  const headingRegex = /^(#{1,6})\s+(.+)$/gm;
+  const headings: { level: number; text: string; id: string }[] = [];
+  let match;
+
+  while ((match = headingRegex.exec(content)) !== null) {
+    const level = match[1].length;
+    const text = match[2].trim();
+    const id = slugifyHeading(text);
+    headings.push({ level, text, id });
+  }
+
+  if (headings.length === 0) return '';
+
+  let toc = '<div class="toc"><h3>Table of Contents</h3><ul>';
+  headings.forEach((heading) => {
+    const indent = '  '.repeat(heading.level - 1);
+    toc += `${indent}<li class="toc-level-${heading.level}"><a href="#${heading.id}">${escapeHtml(heading.text)}</a></li>`;
+  });
+  toc += '</ul></div>';
+
+  return toc;
+};
+
+const renderInlineToc = (bodyContent: string, tocHtml: string) =>
+  bodyContent.replace(/^\[toc\]\s*$/gim, tocHtml || '<div class="toc toc-empty"><h3>Table of Contents</h3><p>No headings yet.</p></div>');
+
+const toggleTaskItemInContent = (source: string, taskIndex: number, checked: boolean) => {
+  let currentIndex = -1;
+
+  return source.replace(/^(\s*(?:[-*+]|\d+\.)\s+)\[([ xX])\](\s+)/gm, (match, prefix, _marker, spacing) => {
+    currentIndex += 1;
+    if (currentIndex !== taskIndex) return match;
+    return `${prefix}[${checked ? 'x' : ' '}]${spacing}`;
+  });
+};
+
+const buildImageMarkdownPath = (filePath: string, currentDocumentPath: string | null) => {
+  const normalizedFilePath = filePath.replaceAll('\\', '/');
+
+  if (!currentDocumentPath) {
+    return `file://${encodeURI(normalizedFilePath)}`;
+  }
+
+  const normalizedDocumentPath = currentDocumentPath.replaceAll('\\', '/');
+  const documentDirectory = normalizedDocumentPath.slice(0, normalizedDocumentPath.lastIndexOf('/'));
+
+  if (normalizedFilePath.startsWith(`${documentDirectory}/`)) {
+    return encodeURI(normalizedFilePath.slice(documentDirectory.length + 1));
+  }
+
+  return `file://${encodeURI(normalizedFilePath)}`;
+};
 
 // KaTeX plugin for markdown-it
 const katexPlugin = (md: MarkdownIt) => {
@@ -116,6 +251,10 @@ const md: MarkdownIt = new MarkdownIt({
   linkify: true,
   typographer: true,
   highlight: function (str: string, lang: string): string {
+    if (lang === 'mermaid') {
+      return `<div class="mermaid">${md.utils.escapeHtml(str)}</div>`;
+    }
+
     if (lang && Prism.languages[lang]) {
       try {
         return `<pre class="language-${lang}"><code>${Prism.highlight(str, Prism.languages[lang], lang)}</code></pre>`;
@@ -123,105 +262,166 @@ const md: MarkdownIt = new MarkdownIt({
     }
     return `<pre class="language-text"><code>${md.utils.escapeHtml(str)}</code></pre>`;
   },
-}).use(katexPlugin);
+})
+  .use(katexPlugin)
+  .use(markdownItFootnote)
+  .use(markdownItTaskLists, { enabled: true, label: true, labelAfter: true })
+  .use(markdownItSub)
+  .use(markdownItSup)
+  .use(markdownItMark)
+  .use(markdownItEmojiFull);
 
-const defaultContent = `# Welcome to MD Editor
+const defaultContent = `---
+title: MD Editor Feature Showcase
+author: Codex
+category: Product Demo
+tags:
+  - markdown
+  - typora-like
+  - electron
+version: 1.1
+published: true
+---
 
-A beautiful Markdown editor inspired by Typora.
+[toc]
 
-## Features
+# Welcome to MD Editor
 
-- **WYSIWYG Editing**: Write markdown with real-time preview
-- **Syntax Highlighting**: Code blocks with syntax highlighting
-- **macOS Native**: Designed following Apple's Human Interface Guidelines
-- **Dark Mode**: Supports system dark mode
-- **Export**: Export to HTML and PDF
+This starter document is a complete feature showcase. You can use it to verify rendering, editing interactions, export, and preview behavior in one place.
 
-## Markdown Examples
+## Quick Tour
 
-### Text Formatting
+- **Split editing**: write Markdown on the left and preview on the right.
+- **Theme switching**: try Light, Dark, and Sepia from the toolbar.
+- **Font controls**: increase or decrease editor text size from the toolbar.
+- **Export**: use the toolbar or menu to export HTML / Word / PDF.
+- **Tabs**: press \`Cmd+N\` to create a new document without losing this one.
 
-This is **bold text**, this is *italic text*, and this is ~~strikethrough~~.
+## Text Formatting
 
-### Code Blocks
+This line contains **bold**, *italic*, ~~strikethrough~~, ==highlight==, H~2~O, and x^2^.
 
-\`\`\`javascript
-function greet(name) {
-  return \`Hello, \${name}!\`;
+You can also include inline code like \`const ready = true\`, emoji shortcodes such as :rocket: :sparkles: :white_check_mark:, and inline math like $E = mc^2$.
+
+## Lists
+
+### Ordered
+
+1. Create content
+2. Preview formatting
+3. Export and share
+
+### Unordered
+
+- Project notes
+- Writing ideas
+  - Nested bullet
+  - Another nested bullet
+
+### Task List
+
+- [x] White screen issue fixed
+- [x] First \`Cmd+N\` content loss fixed
+- [x] Markdown extensions enabled
+- [ ] Table editing toolbar
+- [ ] Preferences panel
+
+Try clicking the task checkboxes in preview mode to update the source document.
+
+## Links, Footnotes, and Quotes
+
+Inline link: [OpenAI](https://openai.com)
+
+Reference link: [Project Repo][repo]
+
+Jump to a section: [See the Mermaid example](#mermaid-diagram)
+
+Here is a footnote reference for the demo[^demo-note].
+
+> “Good writing is clear thinking made visible.”
+>
+> This blockquote is here to verify spacing, typography, and theme contrast.
+
+## Code Blocks
+
+\`\`\`typescript
+type ExportFormat = 'html' | 'pdf' | 'word';
+
+function exportDocument(format: ExportFormat) {
+  return \`Exporting current document as \${format}\`;
 }
 
-console.log(greet('World'));
+console.log(exportDocument('html'));
 \`\`\`
 
-### Math Formulas
+\`\`\`bash
+npm run build
+npm run electron:build:mac
+\`\`\`
 
-Inline math: $E = mc^2$
+## Math
 
-Block math:
-$$\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$
+Block math example:
 
-### Lists
+$$
+f(x) = \\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}
+$$
 
-1. First item
-2. Second item
-3. Third item
+Another example:
 
-- Unordered item
-- Another item
-  - Nested item
+$$
+\\mathrm{PMF}(k) = \\binom{n}{k} p^k (1-p)^{n-k}
+$$
 
-### Task Lists
+## Tables
 
-- [x] Create the editor
-- [ ] Add more features
-- [ ] Publish to App Store
+| Capability | Status | Notes |
+| :-- | :--: | --: |
+| Basic Markdown | Ready | 100% |
+| KaTeX | Ready | 100% |
+| Mermaid | Ready | 100% |
+| Table editor UI | Pending | 0% |
 
-### Tables
+## Mermaid Diagram
 
-| Feature | Status |
-|---------|--------|
-| Markdown | ✅ |
-| Export | ✅ |
-| Themes | 🚧 |
+\`\`\`mermaid
+flowchart TD
+    A[Open Document] --> B[Edit Markdown]
+    B --> C[Live Preview]
+    C --> D[Export]
+    C --> E[Create New Tab]
+    E --> F[Continue Writing]
+\`\`\`
 
-### Blockquotes
+## Images and HTML
 
-> "The best way to predict the future is to create it."
-> — Peter Drucker
+Markdown image example:
 
-### Links and Images
+![Gradient Placeholder](https://dummyimage.com/960x320/e8e8ed/1d1d1f&text=MD+Editor+Preview)
 
-[Visit GitHub](https://github.com)
+Raw HTML still works: <u>underlined text</u>, <span style="color:#007aff;">colored text</span>, and <kbd>Cmd</kbd> + <kbd>N</kbd>.
+
+## YAML Front Matter
+
+This document begins with YAML Front Matter so you can verify the front matter renderer at the top of the preview.
+
+## Suggested Manual Checks
+
+- Toggle between editor / split / preview modes.
+- Change theme and font size.
+- Click task list items in preview.
+- Command-click a link in preview.
+- Paste or drag an image into the editor.
+- Export this document as HTML, Word, and PDF.
 
 ---
 
-Start writing your markdown here!
+Start editing below this line and use this file as a living smoke test for the editor.
+
+[^demo-note]: Footnotes are now rendered in preview and appear at the end of the document.
+
+[repo]: https://github.com/1278715368-web/md
 `;
-
-// Generate TOC from markdown
-const generateTOC = (content: string): string => {
-  const headingRegex = /^(#{1,6})\s+(.+)$/gm;
-  const headings: { level: number; text: string; id: string }[] = [];
-  let match;
-
-  while ((match = headingRegex.exec(content)) !== null) {
-    const level = match[1].length;
-    const text = match[2].trim();
-    const id = text.toLowerCase().replace(/[^\w]+/g, '-');
-    headings.push({ level, text, id });
-  }
-
-  if (headings.length === 0) return '';
-
-  let toc = '<div class="toc"><h3>Table of Contents</h3><ul>';
-  headings.forEach(h => {
-    const indent = '  '.repeat(h.level - 1);
-    toc += `${indent}<li><a href="#${h.id}">${h.text}</a></li>`;
-  });
-  toc += '</ul></div>';
-
-  return toc;
-};
 
 type Theme = 'light' | 'dark' | 'sepia';
 type EditorFile = { path: string; content: string; name: string };
@@ -247,15 +447,19 @@ function App() {
   const [showTOC, setShowTOC] = useState(true);
   const [fontSize, setFontSize] = useState(14);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const mermaidSequenceRef = useRef(0);
+
+  const { bodyContent, frontMatterHtml } = extractFrontMatter(content);
 
   // Add headings with IDs for TOC
-  const contentWithIds = content.replace(/^(#{1,6})\s+(.+)$/gm, (_match, hashes, text) => {
-    const id = text.toLowerCase().replace(/[^\w]+/g, '-');
+  const contentWithIds = bodyContent.replace(/^(#{1,6})\s+(.+)$/gm, (_match, hashes, text) => {
+    const id = slugifyHeading(text);
     return `${hashes} <span id="${id}">${text}</span>`;
   });
 
-  const toc = generateTOC(content);
-  const renderedHtml = md.render(contentWithIds);
+  const toc = generateTOCHtml(bodyContent);
+  const renderedHtml = `${frontMatterHtml}${md.render(renderInlineToc(contentWithIds, toc))}`;
 
   const buildFilesWithCurrentSnapshot = useCallback((): EditorFile[] => {
     const files = [...openFiles];
@@ -289,6 +493,25 @@ function App() {
     saveToHistory(newContent);
   }, [saveToHistory]);
 
+  const insertAtSelection = useCallback(
+    (insertion: string) => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newContent = content.substring(0, start) + insertion + content.substring(end);
+      setContent(newContent);
+      saveToHistory(newContent);
+
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = start + insertion.length;
+      });
+    },
+    [content, saveToHistory]
+  );
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -297,6 +520,7 @@ function App() {
       const end = textarea.selectionEnd;
       const newContent = content.substring(0, start) + '  ' + content.substring(end);
       setContent(newContent);
+      saveToHistory(newContent);
       setTimeout(() => {
         textarea.selectionStart = textarea.selectionEnd = start + 2;
       }, 0);
@@ -327,7 +551,7 @@ function App() {
         setContent(history[newIndex]);
       }
     }
-  }, [content, history, historyIndex]);
+  }, [content, history, historyIndex, saveToHistory]);
 
   // Find and replace
   const handleFind = useCallback(() => {
@@ -379,23 +603,41 @@ function App() {
           const base64 = event.target?.result as string;
           const imageMarkdown = `![Pasted Image](${base64})`;
           
-          const textarea = textareaRef.current;
-          if (textarea) {
-            const start = textarea.selectionStart;
-            const end = textarea.selectionEnd;
-            const newContent = content.substring(0, start) + imageMarkdown + content.substring(end);
-            setContent(newContent);
-            saveToHistory(newContent);
-            
-            setTimeout(() => {
-              textarea.selectionStart = textarea.selectionEnd = start + imageMarkdown.length;
-            }, 0);
+          if (textareaRef.current) {
+            insertAtSelection(imageMarkdown);
           }
         };
         reader.readAsDataURL(blob);
       }
     }
-  }, [content, saveToHistory]);
+  }, [insertAtSelection]);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLTextAreaElement>) => {
+      const imageFiles = Array.from(e.dataTransfer.files).filter((file) => file.type.startsWith('image/'));
+      if (imageFiles.length === 0) return;
+
+      e.preventDefault();
+      const markdown = imageFiles
+        .map((file) => {
+          const fileWithPath = file as File & { path?: string };
+          const imagePath = fileWithPath.path
+            ? buildImageMarkdownPath(fileWithPath.path, currentFilePath)
+            : URL.createObjectURL(file);
+          return `![${file.name}](${imagePath})`;
+        })
+        .join('\n');
+
+      insertAtSelection(markdown);
+    },
+    [currentFilePath, insertAtSelection]
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+    if (Array.from(e.dataTransfer.items).some((item) => item.type.startsWith('image/'))) {
+      e.preventDefault();
+    }
+  }, []);
 
   // Export to Word
   const exportToWord = useCallback(() => {
@@ -459,6 +701,95 @@ ${renderedHtml}
     a.click();
     URL.revokeObjectURL(url);
   }, [renderedHtml]);
+
+  useEffect(() => {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'loose',
+      theme: 'neutral',
+    });
+  }, []);
+
+  useEffect(() => {
+    if (viewMode === 'editor') return;
+
+    const previewElement = previewRef.current;
+    if (!previewElement) return;
+
+    const mermaidNodes = Array.from(previewElement.querySelectorAll('.mermaid'));
+    if (mermaidNodes.length === 0) return;
+
+    let cancelled = false;
+
+    const renderMermaid = async () => {
+      try {
+        mermaidNodes.forEach((node) => {
+          const element = node as HTMLElement;
+          if (!element.id) {
+            mermaidSequenceRef.current += 1;
+            element.id = `mermaid-diagram-${mermaidSequenceRef.current}`;
+          }
+        });
+
+        await mermaid.run({ nodes: mermaidNodes as HTMLElement[] });
+      } catch (error) {
+        if (!cancelled) {
+          mermaidNodes.forEach((node) => {
+            node.classList.add('mermaid-error');
+          });
+          console.error('Mermaid render failed', error);
+        }
+      }
+    };
+
+    renderMermaid();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [renderedHtml, viewMode]);
+
+  const handlePreviewChange = useCallback(
+    (e: React.FormEvent<HTMLDivElement>) => {
+      const target = e.target as HTMLInputElement | null;
+      if (!target || target.type !== 'checkbox' || !target.classList.contains('task-list-item-checkbox')) {
+        return;
+      }
+
+      const checkboxes = Array.from(
+        previewRef.current?.querySelectorAll<HTMLInputElement>('input.task-list-item-checkbox') ?? []
+      );
+      const taskIndex = checkboxes.indexOf(target);
+      if (taskIndex < 0) return;
+
+      const newContent = toggleTaskItemInContent(content, taskIndex, target.checked);
+      setContent(newContent);
+      saveToHistory(newContent);
+    },
+    [content, saveToHistory]
+  );
+
+  const handlePreviewClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const anchor = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null;
+    if (!anchor) return;
+
+    const href = anchor.getAttribute('href');
+    if (!href) return;
+
+    if (href.startsWith('#')) {
+      e.preventDefault();
+      const target = previewRef.current?.querySelector(href);
+      if (target instanceof HTMLElement) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      return;
+    }
+
+    if ((e.metaKey || e.ctrlKey) && typeof window !== 'undefined' && window.electronAPI) {
+      e.preventDefault();
+      void window.electronAPI.openExternal(anchor.href);
+    }
+  }, []);
 
   // File operations
   useEffect(() => {
@@ -726,6 +1057,8 @@ ${renderedHtml}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
                 placeholder="Start writing your markdown here..."
                 spellCheck={false}
                 style={{ fontSize: `${fontSize}px` }}
@@ -738,7 +1071,10 @@ ${renderedHtml}
                 <div dangerouslySetInnerHTML={{ __html: toc }} />
               )}
               <div
+                ref={previewRef}
                 className="markdown-body"
+                onClick={handlePreviewClick}
+                onChange={handlePreviewChange}
                 dangerouslySetInnerHTML={{ __html: renderedHtml }}
               />
             </div>

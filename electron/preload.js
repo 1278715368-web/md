@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMenuSaveFile: (callback) => ipcRenderer.on('menu-save-file', callback),
   onMenuSaveAsFile: (callback) => ipcRenderer.on('menu-save-as-file', callback),
   onMenuExportHtml: (callback) => ipcRenderer.on('menu-export-html', callback),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   
   removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
 });

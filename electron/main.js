@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -196,6 +196,10 @@ ipcMain.handle('save-file', async (event, { content, filePath }) => {
 
 ipcMain.handle('get-current-file-path', () => {
   return currentFilePath;
+});
+
+ipcMain.handle('open-external', async (_event, url) => {
+  await shell.openExternal(url);
 });
 
 app.whenReady().then(createWindow);
