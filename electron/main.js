@@ -4,6 +4,48 @@ const fs = require('fs');
 
 let mainWindow;
 let currentFilePath = null;
+let pendingFilePath = null;
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+function getFilePathFromArgv(argv) {
+  return argv.find((arg) => arg && !arg.startsWith('-') && fs.existsSync(arg));
+}
+
+function sendFileToRenderer(filePath) {
+  if (!mainWindow || !filePath) return;
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    currentFilePath = filePath;
+    mainWindow.webContents.send('file-opened', { filePath, content });
+    mainWindow.setTitle(`${path.basename(filePath)} - MD Editor`);
+  } catch (error) {
+    dialog.showErrorBox('Open File Failed', `Could not open file:\n${filePath}\n\n${error.message}`);
+  }
+}
+
+function openFilePath(filePath) {
+  if (!filePath) return;
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.webContents.isLoading()) {
+      pendingFilePath = filePath;
+      mainWindow.webContents.once('did-finish-load', () => {
+        if (pendingFilePath) {
+          const nextFilePath = pendingFilePath;
+          pendingFilePath = null;
+          sendFileToRenderer(nextFilePath);
+        }
+      });
+      return;
+    }
+
+    sendFileToRenderer(filePath);
+    return;
+  }
+
+  pendingFilePath = filePath;
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -30,6 +72,14 @@ function createWindow() {
     const indexPath = path.join(__dirname, '../dist/index.html');
     mainWindow.loadFile(indexPath);
   }
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (pendingFilePath) {
+      const filePath = pendingFilePath;
+      pendingFilePath = null;
+      sendFileToRenderer(filePath);
+    }
+  });
 
   createMenu();
 
@@ -76,11 +126,7 @@ function createMenu() {
               ],
             });
             if (!result.canceled && result.filePaths.length > 0) {
-              const filePath = result.filePaths[0];
-              const content = fs.readFileSync(filePath, 'utf-8');
-              currentFilePath = filePath;
-              mainWindow.webContents.send('file-opened', { filePath, content });
-              mainWindow.setTitle(`${path.basename(filePath)} - MD Editor`);
+              openFilePath(result.filePaths[0]);
             }
           },
         },
@@ -202,7 +248,39 @@ ipcMain.handle('open-external', async (_event, url) => {
   await shell.openExternal(url);
 });
 
-app.whenReady().then(createWindow);
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  openFilePath(filePath);
+});
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const filePathFromArg = getFilePathFromArgv(argv.slice(app.isPackaged ? 1 : 2));
+
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.focus();
+    }
+
+    if (filePathFromArg) {
+      openFilePath(filePathFromArg);
+    }
+  });
+
+  app.whenReady().then(() => {
+    const filePathFromArg = getFilePathFromArgv(process.argv.slice(app.isPackaged ? 1 : 2));
+
+    if (filePathFromArg) {
+      pendingFilePath = filePathFromArg;
+    }
+
+    createWindow();
+  });
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
