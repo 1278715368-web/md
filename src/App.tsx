@@ -425,30 +425,339 @@ Start editing below this line and use this file as a living smoke test for the e
 
 type Theme = 'light' | 'dark' | 'sepia';
 type EditorFile = { path: string; content: string; name: string };
+type AutosaveState = 'idle' | 'saving' | 'saved' | 'error';
+type SlashCommand = {
+  id: string;
+  label: string;
+  keywords: string[];
+  description: string;
+  template: string;
+};
+
+type SlashMenuState = {
+  start: number;
+  end: number;
+  query: string;
+};
+
+type TableCellGrid = string[][];
+type TableSelection = {
+  start: number;
+  end: number;
+};
+
+const defaultFlowchartSource = `flowchart TD
+    Start([Start]) --> Draft[Write content]
+    Draft --> Review{Need review?}
+    Review -->|Yes| Update[Revise document]
+    Review -->|No| Publish([Publish])
+    Update --> Publish
+`;
+
+const slashCommands: SlashCommand[] = [
+  {
+    id: 'code',
+    label: '代码块',
+    keywords: ['code', '代码', '代码块', 'snippet'],
+    description: '插入通用代码块',
+    template: '```text\n// code\n```\n',
+  },
+  {
+    id: 'json',
+    label: 'JSON 代码块',
+    keywords: ['json', '接口', '数据'],
+    description: '插入带 json 语言标记的代码块',
+    template: '```json\n{\n  "name": "demo"\n}\n```\n',
+  },
+  {
+    id: 'javascript',
+    label: 'JavaScript 代码块',
+    keywords: ['js', 'javascript'],
+    description: '插入 JavaScript 代码块',
+    template: '```javascript\nconsole.log("hello");\n```\n',
+  },
+  {
+    id: 'typescript',
+    label: 'TypeScript 代码块',
+    keywords: ['ts', 'typescript'],
+    description: '插入 TypeScript 代码块',
+    template: '```typescript\nconst message: string = "hello";\n```\n',
+  },
+  {
+    id: 'table',
+    label: '表格',
+    keywords: ['table', '表格', 'columns'],
+    description: '插入 3 列 Markdown 表格',
+    template: '| 列 1 | 列 2 | 列 3 |\n| --- | --- | --- |\n| 内容 | 内容 | 内容 |\n',
+  },
+  {
+    id: 'flowchart',
+    label: '流程图',
+    keywords: ['flowchart', '流程图', 'mermaid', 'diagram'],
+    description: '插入 Mermaid 流程图模板',
+    template: `\`\`\`mermaid\n${defaultFlowchartSource}\`\`\`\n`,
+  },
+];
 
 const getFileName = (filePath: string | null) => {
   if (!filePath) return 'Untitled';
   return filePath.split('/').pop() || 'Untitled';
 };
 
+const getSlashMenuState = (value: string, cursorPosition: number): SlashMenuState | null => {
+  const lineStart = value.lastIndexOf('\n', cursorPosition - 1) + 1;
+  const lineContent = value.slice(lineStart, cursorPosition);
+  const slashIndex = lineContent.lastIndexOf('/');
+
+  if (slashIndex < 0) return null;
+
+  const beforeSlash = lineContent.slice(0, slashIndex);
+  if (beforeSlash.trim().length > 0) return null;
+
+  const query = lineContent.slice(slashIndex + 1);
+  if (/\s/.test(query)) return null;
+
+  return {
+    start: lineStart + slashIndex,
+    end: cursorPosition,
+    query,
+  };
+};
+
+const downloadTextFile = (filename: string, content: string, mimeType: string) => {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const createTableGrid = (rows: number, columns: number): TableCellGrid =>
+  Array.from({ length: rows }, (_, rowIndex) =>
+    Array.from({ length: columns }, (_, columnIndex) =>
+      rowIndex === 0 ? `表头 ${columnIndex + 1}` : `内容 ${rowIndex}-${columnIndex + 1}`
+    )
+  );
+
+const escapeTableCell = (value: string) => value.replaceAll('|', '\\|').replaceAll('\n', '<br />');
+
+const tableToMarkdown = (grid: TableCellGrid) => {
+  if (grid.length === 0 || grid[0].length === 0) return '';
+
+  const header = `| ${grid[0].map(escapeTableCell).join(' | ')} |`;
+  const separator = `| ${grid[0].map(() => '---').join(' | ')} |`;
+  const body = grid
+    .slice(1)
+    .map((row) => `| ${row.map(escapeTableCell).join(' | ')} |`)
+    .join('\n');
+
+  return `${header}\n${separator}${body ? `\n${body}` : ''}\n`;
+};
+
+const parseMarkdownTable = (block: string): TableCellGrid | null => {
+  const lines = block
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) return null;
+  if (!lines.every((line) => /^\|.*\|$/.test(line))) return null;
+  if (!/^\|(?:\s*:?-{3,}:?\s*\|)+$/.test(lines[1])) return null;
+
+  const parseRow = (line: string) =>
+    line
+      .slice(1, -1)
+      .split('|')
+      .map((cell) => cell.trim().replaceAll('<br />', '\n').replaceAll('\\|', '|'));
+
+  const header = parseRow(lines[0]);
+  const body = lines.slice(2).map(parseRow);
+  const width = header.length;
+
+  if (width === 0) return null;
+
+  return [header, ...body.map((row) => Array.from({ length: width }, (_, index) => row[index] ?? ''))];
+};
+
+const findTableAroundCursor = (value: string, cursorPosition: number): TableSelection | null => {
+  const lines = value.split('\n');
+  let charIndex = 0;
+  let cursorLine = Math.max(lines.length - 1, 0);
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const nextIndex = charIndex + lines[lineIndex].length;
+    if (cursorPosition <= nextIndex) {
+      cursorLine = lineIndex;
+      break;
+    }
+    charIndex = nextIndex + 1;
+  }
+
+  const isTableLine = (line: string) => /^\|.*\|$/.test(line.trim());
+  if (!isTableLine(lines[cursorLine] ?? '')) return null;
+
+  let startLine = cursorLine;
+  let endLine = cursorLine;
+
+  while (startLine > 0 && isTableLine(lines[startLine - 1])) startLine -= 1;
+  while (endLine < lines.length - 1 && isTableLine(lines[endLine + 1])) endLine += 1;
+
+  const block = lines.slice(startLine, endLine + 1).join('\n');
+  if (!parseMarkdownTable(block)) return null;
+
+  const start = lines.slice(0, startLine).reduce((sum, line) => sum + line.length + 1, 0);
+  const end = lines.slice(0, endLine + 1).reduce((sum, line) => sum + line.length + 1, 0);
+
+  return { start, end };
+};
+
+const extractMarkdownTables = (value: string): Array<{ selection: TableSelection; grid: TableCellGrid }> => {
+  const lines = value.split('\n');
+  const tables: Array<{ selection: TableSelection; grid: TableCellGrid }> = [];
+  const isTableLine = (line: string) => /^\|.*\|$/.test(line.trim());
+
+  let lineIndex = 0;
+  let charOffset = 0;
+
+  while (lineIndex < lines.length) {
+    if (!isTableLine(lines[lineIndex])) {
+      charOffset += lines[lineIndex].length + 1;
+      lineIndex += 1;
+      continue;
+    }
+
+    const startLine = lineIndex;
+    let endLine = lineIndex;
+
+    while (endLine + 1 < lines.length && isTableLine(lines[endLine + 1])) {
+      endLine += 1;
+    }
+
+    const block = lines.slice(startLine, endLine + 1).join('\n');
+    const grid = parseMarkdownTable(block);
+    const blockLength = lines.slice(startLine, endLine + 1).reduce((sum, line) => sum + line.length + 1, 0);
+
+    if (grid) {
+      tables.push({
+        selection: {
+          start: charOffset,
+          end: charOffset + blockLength,
+        },
+        grid,
+      });
+    }
+
+    charOffset += blockLength;
+    lineIndex = endLine + 1;
+  }
+
+  return tables;
+};
+
+const flowchartTemplates = [
+  {
+    id: 'approval',
+    label: '审批流',
+    source: `flowchart TD
+    Submit([提交申请]) --> Manager{经理审批}
+    Manager -->|通过| Finance[财务复核]
+    Manager -->|驳回| Rework[修改后重新提交]
+    Finance --> Archive([归档])
+    Rework --> Submit
+`,
+  },
+  {
+    id: 'service',
+    label: '服务调用',
+    source: `flowchart LR
+    Client[Web Client] --> Gateway[API Gateway]
+    Gateway --> Auth[Auth Service]
+    Gateway --> Order[Order Service]
+    Order --> DB[(Database)]
+    Order --> MQ[[Message Queue]]
+`,
+  },
+  {
+    id: 'publish',
+    label: '内容发布',
+    source: `flowchart TD
+    Draft[草稿] --> Review{审核通过?}
+    Review -->|是| Publish[发布]
+    Review -->|否| Update[继续编辑]
+    Publish --> Notify[通知订阅者]
+    Update --> Draft
+`,
+  },
+];
+
+const SESSION_STORAGE_KEY = 'md-editor-session-v1';
+
+type StoredSession = {
+  content: string;
+  currentFilePath: string | null;
+  openFiles: EditorFile[];
+  activeFileIndex: number;
+  viewMode: 'split' | 'editor' | 'preview';
+  theme: Theme;
+  fontSize: number;
+  showTOC: boolean;
+};
+
+const loadStoredSession = (): StoredSession | null => {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as StoredSession;
+  } catch {
+    return null;
+  }
+};
+
+const persistStoredSession = (session: StoredSession) => {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch (error) {
+    console.error('Failed to persist editor session', error);
+  }
+};
+
 function App() {
-  const [content, setContent] = useState(defaultContent);
-  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'split' | 'editor' | 'preview'>('split');
-  const [openFiles, setOpenFiles] = useState<EditorFile[]>([]);
-  const [activeFileIndex, setActiveFileIndex] = useState<number>(-1);
+  const initialSession = loadStoredSession();
+  const [content, setContent] = useState(initialSession?.content ?? defaultContent);
+  const [currentFilePath, setCurrentFilePath] = useState<string | null>(initialSession?.currentFilePath ?? null);
+  const [viewMode, setViewMode] = useState<'split' | 'editor' | 'preview'>(initialSession?.viewMode ?? 'split');
+  const [openFiles, setOpenFiles] = useState<EditorFile[]>(initialSession?.openFiles ?? []);
+  const [activeFileIndex, setActiveFileIndex] = useState<number>(initialSession?.activeFileIndex ?? -1);
   const [showFindReplace, setShowFindReplace] = useState(false);
   const [findText, setFindText] = useState('');
   const [replaceText, setReplaceText] = useState('');
-  const [theme, setTheme] = useState<Theme>('light');
+  const [theme, setTheme] = useState<Theme>(initialSession?.theme ?? 'light');
   const [recentFiles, setRecentFiles] = useState<string[]>([]);
-  const [history, setHistory] = useState<string[]>([defaultContent]);
+  const [history, setHistory] = useState<string[]>([initialSession?.content ?? defaultContent]);
   const [historyIndex, setHistoryIndex] = useState(0);
-  const [showTOC, setShowTOC] = useState(true);
-  const [fontSize, setFontSize] = useState(14);
+  const [showTOC, setShowTOC] = useState(initialSession?.showTOC ?? true);
+  const [fontSize, setFontSize] = useState(initialSession?.fontSize ?? 14);
+  const [autosaveState, setAutosaveState] = useState<AutosaveState>('idle');
+  const [lastAutosaveLabel, setLastAutosaveLabel] = useState('');
+  const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
+  const [selectedSlashIndex, setSelectedSlashIndex] = useState(0);
+  const [showFlowchartStudio, setShowFlowchartStudio] = useState(false);
+  const [flowchartSource, setFlowchartSource] = useState(defaultFlowchartSource);
+  const [flowchartSvg, setFlowchartSvg] = useState('');
+  const [flowchartError, setFlowchartError] = useState('');
+  const [showTableStudio, setShowTableStudio] = useState(false);
+  const [tableGrid, setTableGrid] = useState<TableCellGrid>(() => createTableGrid(3, 3));
+  const [tableSelection, setTableSelection] = useState<TableSelection | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const mermaidSequenceRef = useRef(0);
+  const lastDiskSavedContentRef = useRef<Record<string, string>>({});
 
   const { bodyContent, frontMatterHtml } = extractFrontMatter(content);
 
@@ -477,6 +786,24 @@ function App() {
     return [{ path: currentFilePath ?? '', content, name: getFileName(currentFilePath) }, ...files];
   }, [openFiles, activeFileIndex, currentFilePath, content]);
 
+  const updateActiveFileMetadata = useCallback((filePath: string) => {
+    const fileName = getFileName(filePath);
+
+    setCurrentFilePath(filePath);
+    setOpenFiles((currentFiles) => {
+      if (activeFileIndex < 0 || activeFileIndex >= currentFiles.length) return currentFiles;
+
+      const nextFiles = [...currentFiles];
+      nextFiles[activeFileIndex] = {
+        ...nextFiles[activeFileIndex],
+        path: filePath,
+        name: fileName,
+        content,
+      };
+      return nextFiles;
+    });
+  }, [activeFileIndex, content]);
+
 
   // Save to history
   const saveToHistory = useCallback((newContent: string) => {
@@ -487,10 +814,99 @@ function App() {
     setHistoryIndex(newHistory.length - 1);
   }, [history, historyIndex]);
 
+  useEffect(() => {
+    const filesSnapshot = buildFilesWithCurrentSnapshot();
+    const normalizedActiveIndex =
+      activeFileIndex >= 0 ? activeFileIndex : filesSnapshot.length > 0 ? 0 : -1;
+
+    persistStoredSession({
+      content,
+      currentFilePath,
+      openFiles: filesSnapshot,
+      activeFileIndex: normalizedActiveIndex,
+      viewMode,
+      theme,
+      fontSize,
+      showTOC,
+    });
+  }, [activeFileIndex, buildFilesWithCurrentSnapshot, content, currentFilePath, fontSize, showTOC, theme, viewMode]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const filesSnapshot = buildFilesWithCurrentSnapshot();
+      persistStoredSession({
+        content,
+        currentFilePath,
+        openFiles: filesSnapshot,
+        activeFileIndex: activeFileIndex >= 0 ? activeFileIndex : filesSnapshot.length > 0 ? 0 : -1,
+        viewMode,
+        theme,
+        fontSize,
+        showTOC,
+      });
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [activeFileIndex, buildFilesWithCurrentSnapshot, content, currentFilePath, fontSize, showTOC, theme, viewMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.electronAPI) return;
+
+    const filesSnapshot = buildFilesWithCurrentSnapshot();
+    const filesNeedingDiskSave = filesSnapshot.filter(
+      (file) => file.path && lastDiskSavedContentRef.current[file.path] !== file.content
+    );
+
+    if (filesNeedingDiskSave.length === 0) {
+      if (content.trim().length > 0 || currentFilePath) {
+        setAutosaveState('saved');
+      }
+      return;
+    }
+
+    setAutosaveState('saving');
+    const timer = window.setTimeout(async () => {
+      try {
+        for (const file of filesNeedingDiskSave) {
+          const result = await window.electronAPI.saveFile(file.content, file.path);
+          if (!result.success || !result.filePath) {
+            throw new Error(result.error || `Failed to auto-save ${file.path}`);
+          }
+          lastDiskSavedContentRef.current[result.filePath] = file.content;
+        }
+
+        setAutosaveState('saved');
+        setLastAutosaveLabel(`已自动保存 ${new Date().toLocaleTimeString()}`);
+      } catch (error) {
+        console.error('Auto-save failed', error);
+        setAutosaveState('error');
+        setLastAutosaveLabel('自动保存失败');
+      }
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [buildFilesWithCurrentSnapshot, content, currentFilePath]);
+
+  useEffect(() => {
+    if (currentFilePath || content.trim().length === 0) return;
+
+    setAutosaveState('saving');
+    const timer = window.setTimeout(() => {
+      setAutosaveState('saved');
+      setLastAutosaveLabel('未命名草稿已保存在本地');
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [content, currentFilePath]);
+
   const handleTextareaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
     setContent(newContent);
     saveToHistory(newContent);
+    setSlashMenu(getSlashMenuState(newContent, e.target.selectionStart));
+    setSelectedSlashIndex(0);
+    setTableSelection(findTableAroundCursor(newContent, e.target.selectionStart));
   }, [saveToHistory]);
 
   const insertAtSelection = useCallback(
@@ -512,7 +928,165 @@ function App() {
     [content, saveToHistory]
   );
 
+  const replaceRange = useCallback(
+    (start: number, end: number, insertion: string) => {
+      const newContent = content.slice(0, start) + insertion + content.slice(end);
+      setContent(newContent);
+      saveToHistory(newContent);
+
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        const nextCursor = start + insertion.length;
+        textarea.selectionStart = textarea.selectionEnd = nextCursor;
+      });
+    },
+    [content, saveToHistory]
+  );
+
+  const filteredSlashCommands = slashMenu
+    ? slashCommands.filter((command) => {
+        const query = slashMenu.query.trim().toLowerCase();
+        if (!query) return true;
+        return (
+          command.label.toLowerCase().includes(query) ||
+          command.description.toLowerCase().includes(query) ||
+          command.keywords.some((keyword) => keyword.toLowerCase().includes(query))
+        );
+      })
+    : [];
+
+  const applySlashCommand = useCallback(
+    (command: SlashCommand) => {
+      if (!slashMenu) return;
+      replaceRange(slashMenu.start, slashMenu.end, command.template);
+      setSlashMenu(null);
+      setSelectedSlashIndex(0);
+    },
+    [replaceRange, slashMenu]
+  );
+
+  const insertFlowchartSnippet = useCallback((snippet: string) => {
+    setFlowchartSource((current) => {
+      const needsNewline = current.endsWith('\n') ? '' : '\n';
+      return `${current}${needsNewline}${snippet}\n`;
+    });
+  }, []);
+
+  const exportSvg = useCallback((svgMarkup: string, filename: string) => {
+    downloadTextFile(filename, svgMarkup, 'image/svg+xml;charset=utf-8');
+  }, []);
+
+  const openTableStudioWithSelection = useCallback((selection: TableSelection) => {
+    const parsed = parseMarkdownTable(content.slice(selection.start, selection.end));
+    if (!parsed) return;
+
+    setTableGrid(parsed);
+    setTableSelection(selection);
+    setShowTableStudio(true);
+  }, [content]);
+
+  const syncTableSelection = useCallback((cursorPosition: number) => {
+    setTableSelection(findTableAroundCursor(content, cursorPosition));
+  }, [content]);
+
+  const handleTableCellChange = useCallback((rowIndex: number, columnIndex: number, value: string) => {
+    setTableGrid((current) =>
+      current.map((row, currentRowIndex) =>
+        currentRowIndex === rowIndex
+          ? row.map((cell, currentColumnIndex) => (currentColumnIndex === columnIndex ? value : cell))
+          : row
+      )
+    );
+  }, []);
+
+  const addTableRow = useCallback(() => {
+    setTableGrid((current) => {
+      const columns = current[0]?.length ?? 3;
+      return [...current, Array.from({ length: columns }, (_, index) => `内容 ${current.length}-${index + 1}`)];
+    });
+  }, []);
+
+  const removeTableRow = useCallback(() => {
+    setTableGrid((current) => (current.length > 2 ? current.slice(0, -1) : current));
+  }, []);
+
+  const addTableColumn = useCallback(() => {
+    setTableGrid((current) =>
+      current.map((row, rowIndex) => [
+        ...row,
+        rowIndex === 0 ? `表头 ${row.length + 1}` : `内容 ${rowIndex}-${row.length + 1}`,
+      ])
+    );
+  }, []);
+
+  const removeTableColumn = useCallback(() => {
+    setTableGrid((current) => (current[0]?.length > 1 ? current.map((row) => row.slice(0, -1)) : current));
+  }, []);
+
+  const applyTableToDocument = useCallback(() => {
+    const markdown = tableToMarkdown(tableGrid);
+    if (tableSelection) {
+      replaceRange(tableSelection.start, tableSelection.end, markdown);
+      setTableSelection(null);
+      return;
+    }
+
+    insertAtSelection(markdown);
+  }, [insertAtSelection, replaceRange, tableGrid, tableSelection]);
+
+  const loadTableFromDocument = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const selection = findTableAroundCursor(content, textarea.selectionStart);
+    if (!selection) return;
+
+    openTableStudioWithSelection(selection);
+  }, [content, openTableStudioWithSelection]);
+
+  const exportFlowchartFromSource = useCallback(
+    async (source: string, filename: string) => {
+      try {
+        const diagramId = `export-diagram-${Date.now()}`;
+        const { svg } = await mermaid.render(diagramId, source);
+        exportSvg(svg, filename);
+      } catch (error) {
+        console.error('Flowchart export failed', error);
+      }
+    },
+    [exportSvg]
+  );
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMenu && filteredSlashCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedSlashIndex((current) => (current + 1) % filteredSlashCommands.length);
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedSlashIndex((current) => (current - 1 + filteredSlashCommands.length) % filteredSlashCommands.length);
+        return;
+      }
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        applySlashCommand(filteredSlashCommands[selectedSlashIndex] ?? filteredSlashCommands[0]);
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSlashMenu(null);
+        setSelectedSlashIndex(0);
+        return;
+      }
+    }
+
     if (e.key === 'Tab') {
       e.preventDefault();
       const textarea = e.currentTarget;
@@ -551,7 +1125,7 @@ function App() {
         setContent(history[newIndex]);
       }
     }
-  }, [content, history, historyIndex, saveToHistory]);
+  }, [applySlashCommand, content, filteredSlashCommands, history, historyIndex, saveToHistory, selectedSlashIndex, slashMenu]);
 
   // Find and replace
   const handleFind = useCallback(() => {
@@ -611,6 +1185,22 @@ function App() {
       }
     }
   }, [insertAtSelection]);
+
+  const handleEditorClick = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
+    const textarea = e.currentTarget;
+    const nextSlashState = getSlashMenuState(textarea.value, textarea.selectionStart);
+    setSlashMenu(nextSlashState);
+    setSelectedSlashIndex(0);
+    syncTableSelection(textarea.selectionStart);
+  }, [syncTableSelection]);
+
+  const handleEditorSelect = useCallback((e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    const textarea = e.currentTarget;
+    const nextSlashState = getSlashMenuState(textarea.value, textarea.selectionStart);
+    setSlashMenu(nextSlashState);
+    setSelectedSlashIndex(0);
+    syncTableSelection(textarea.selectionStart);
+  }, [syncTableSelection]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLTextAreaElement>) => {
@@ -703,6 +1293,32 @@ ${renderedHtml}
   }, [renderedHtml]);
 
   useEffect(() => {
+    if (!showFlowchartStudio) return;
+
+    let cancelled = false;
+
+    const renderStudioFlowchart = async () => {
+      try {
+        const diagramId = `studio-diagram-${Date.now()}`;
+        const { svg } = await mermaid.render(diagramId, flowchartSource);
+        if (cancelled) return;
+        setFlowchartSvg(svg);
+        setFlowchartError('');
+      } catch (error) {
+        if (cancelled) return;
+        setFlowchartSvg('');
+        setFlowchartError(error instanceof Error ? error.message : '流程图渲染失败');
+      }
+    };
+
+    renderStudioFlowchart();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [flowchartSource, showFlowchartStudio]);
+
+  useEffect(() => {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'loose',
@@ -770,6 +1386,16 @@ ${renderedHtml}
   );
 
   const handlePreviewClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const exportButton = (e.target as HTMLElement).closest('[data-export-mermaid]') as HTMLButtonElement | null;
+    if (exportButton) {
+      e.preventDefault();
+      const source = exportButton.getAttribute('data-source');
+      if (source) {
+        void exportFlowchartFromSource(source, 'flowchart.svg');
+      }
+      return;
+    }
+
     const anchor = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null;
     if (!anchor) return;
 
@@ -789,7 +1415,67 @@ ${renderedHtml}
       e.preventDefault();
       void window.electronAPI.openExternal(anchor.href);
     }
-  }, []);
+  }, [exportFlowchartFromSource]);
+
+  const handlePreviewDoubleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const flowchartBlock = (e.target as HTMLElement).closest('.mermaid-block') as HTMLElement | null;
+    if (flowchartBlock) {
+      const exportButton = flowchartBlock.querySelector<HTMLButtonElement>('[data-source]');
+      const source = exportButton?.getAttribute('data-source');
+      if (source) {
+        setFlowchartSource(source);
+        setShowFlowchartStudio(true);
+      }
+      return;
+    }
+
+    const tableElement = (e.target as HTMLElement).closest('table') as HTMLTableElement | null;
+    if (!tableElement || !previewRef.current?.contains(tableElement)) return;
+
+    const tables = extractMarkdownTables(content);
+    const tableIndex = Array.from(previewRef.current.querySelectorAll('table')).indexOf(tableElement);
+    const matchedTable = tables[tableIndex];
+    if (!matchedTable) return;
+
+    setTableGrid(matchedTable.grid);
+    setTableSelection(matchedTable.selection);
+    setShowTableStudio(true);
+  }, [content]);
+
+  useEffect(() => {
+    if (!previewRef.current) return;
+
+    const mermaidBlocks = Array.from(previewRef.current.querySelectorAll('.mermaid')) as HTMLElement[];
+    mermaidBlocks.forEach((block, index) => {
+      const source = block.textContent ?? '';
+      const wrapper = block.parentElement;
+      if (!wrapper || wrapper.classList.contains('mermaid-block')) return;
+
+      const container = document.createElement('div');
+      container.className = 'mermaid-block';
+
+      const toolbar = document.createElement('div');
+      toolbar.className = 'mermaid-block-toolbar';
+
+      const badge = document.createElement('span');
+      badge.className = 'mermaid-block-label';
+      badge.textContent = `Flowchart ${index + 1}`;
+
+      const button = document.createElement('button');
+      button.className = 'mermaid-export-btn';
+      button.type = 'button';
+      button.textContent = '导出 SVG';
+      button.setAttribute('data-export-mermaid', 'true');
+      button.setAttribute('data-source', source);
+
+      toolbar.appendChild(badge);
+      toolbar.appendChild(button);
+
+      wrapper.insertBefore(container, block);
+      container.appendChild(toolbar);
+      container.appendChild(block);
+    });
+  }, [renderedHtml, viewMode]);
 
   // File operations
   useEffect(() => {
@@ -807,6 +1493,7 @@ ${renderedHtml}
         const fileName = getFileName(filePath);
         const files = buildFilesWithCurrentSnapshot();
         const existingIndex = files.findIndex(f => f.path === filePath);
+        lastDiskSavedContentRef.current[filePath] = fileContent;
         
         if (existingIndex >= 0) {
           setActiveFileIndex(existingIndex);
@@ -829,7 +1516,10 @@ ${renderedHtml}
         if (typeof window !== 'undefined' && window.electronAPI) {
           const result = await window.electronAPI.saveFile(content, currentFilePath || undefined);
           if (result.success && result.filePath) {
-            setCurrentFilePath(result.filePath);
+            lastDiskSavedContentRef.current[result.filePath] = content;
+            updateActiveFileMetadata(result.filePath);
+            setAutosaveState('saved');
+            setLastAutosaveLabel(`已保存 ${new Date().toLocaleTimeString()}`);
           }
         }
       });
@@ -838,7 +1528,10 @@ ${renderedHtml}
         if (typeof window !== 'undefined' && window.electronAPI) {
           const result = await window.electronAPI.saveFile(content);
           if (result.success && result.filePath) {
-            setCurrentFilePath(result.filePath);
+            lastDiskSavedContentRef.current[result.filePath] = content;
+            updateActiveFileMetadata(result.filePath);
+            setAutosaveState('saved');
+            setLastAutosaveLabel(`已保存 ${new Date().toLocaleTimeString()}`);
           }
         }
       });
@@ -855,7 +1548,7 @@ ${renderedHtml}
         window.electronAPI.removeAllListeners('menu-export-html');
       };
     }
-  }, [content, currentFilePath, recentFiles, exportHtml, buildFilesWithCurrentSnapshot]);
+  }, [content, currentFilePath, recentFiles, exportHtml, buildFilesWithCurrentSnapshot, updateActiveFileMetadata]);
 
   const handleFileSwitch = useCallback((index: number) => {
     if (index >= 0 && index < openFiles.length && index !== activeFileIndex) {
@@ -923,9 +1616,10 @@ ${renderedHtml}
 
       {/* Toolbar */}
       <div className="toolbar">
-        <div className="toolbar-left">
-          <div className="view-mode-buttons">
+        <div className="toolbar-left" data-testid="toolbar-left">
+          <div className="view-mode-buttons" data-testid="view-mode-buttons">
             <button
+              data-testid="view-editor"
               className={`view-btn ${viewMode === 'editor' ? 'active' : ''}`}
               onClick={() => setViewMode('editor')}
               title="Editor only"
@@ -938,6 +1632,7 @@ ${renderedHtml}
               </svg>
             </button>
             <button
+              data-testid="view-split"
               className={`view-btn ${viewMode === 'split' ? 'active' : ''}`}
               onClick={() => setViewMode('split')}
               title="Split view"
@@ -948,6 +1643,7 @@ ${renderedHtml}
               </svg>
             </button>
             <button
+              data-testid="view-preview"
               className={`view-btn ${viewMode === 'preview' ? 'active' : ''}`}
               onClick={() => setViewMode('preview')}
               title="Preview only"
@@ -961,6 +1657,7 @@ ${renderedHtml}
           </div>
           
           <button
+            data-testid="toggle-find-replace"
             className="toolbar-btn"
             onClick={() => setShowFindReplace(!showFindReplace)}
             title="Find & Replace (Cmd+F)"
@@ -972,6 +1669,7 @@ ${renderedHtml}
           </button>
 
           <button
+            data-testid="toggle-toc"
             className="toolbar-btn"
             onClick={() => setShowTOC(!showTOC)}
             title="Table of Contents"
@@ -983,7 +1681,22 @@ ${renderedHtml}
             </svg>
           </button>
 
+          <button
+            data-testid="toggle-table-studio"
+            className="toolbar-btn"
+            onClick={() => {
+              setShowTableStudio((current) => !current);
+              if (!showTableStudio) {
+                loadTableFromDocument();
+              }
+            }}
+            title="Table Studio"
+          >
+            表格
+          </button>
+
           <select
+            data-testid="theme-select"
             className="theme-select"
             value={theme}
             onChange={(e) => setTheme(e.target.value as Theme)}
@@ -995,14 +1708,15 @@ ${renderedHtml}
           </select>
 
           <div className="font-size-control">
-            <button onClick={() => setFontSize(Math.max(10, fontSize - 1))}>-</button>
-            <span>{fontSize}px</span>
-            <button onClick={() => setFontSize(Math.min(24, fontSize + 1))}>+</button>
+            <button data-testid="font-size-decrease" onClick={() => setFontSize(Math.max(10, fontSize - 1))}>-</button>
+            <span data-testid="font-size-value">{fontSize}px</span>
+            <button data-testid="font-size-increase" onClick={() => setFontSize(Math.min(24, fontSize + 1))}>+</button>
           </div>
         </div>
 
-        <div className="toolbar-right">
+        <div className="toolbar-right" data-testid="toolbar-right">
           <button
+            data-testid="export-html"
             className="toolbar-btn"
             onClick={exportHtml}
             title="Export HTML"
@@ -1010,6 +1724,7 @@ ${renderedHtml}
             HTML
           </button>
           <button
+            data-testid="export-word"
             className="toolbar-btn"
             onClick={exportToWord}
             title="Export Word"
@@ -1021,27 +1736,29 @@ ${renderedHtml}
 
       {/* Find Replace Panel */}
       {showFindReplace && (
-        <div className="find-replace-panel">
+        <div className="find-replace-panel" data-testid="find-replace-panel">
           <div className="find-row">
             <input
+              data-testid="find-input"
               type="text"
               placeholder="Find..."
               value={findText}
               onChange={(e) => setFindText(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleFind()}
             />
-            <button onClick={handleFind}>Find</button>
-            <button onClick={() => setShowFindReplace(false)}>×</button>
+            <button data-testid="find-next" onClick={handleFind}>Find</button>
+            <button data-testid="close-find-replace" onClick={() => setShowFindReplace(false)}>×</button>
           </div>
           <div className="replace-row">
             <input
+              data-testid="replace-input"
               type="text"
               placeholder="Replace..."
               value={replaceText}
               onChange={(e) => setReplaceText(e.target.value)}
             />
-            <button onClick={handleReplace}>Replace</button>
-            <button onClick={handleReplaceAll}>Replace All</button>
+            <button data-testid="replace-once" onClick={handleReplace}>Replace</button>
+            <button data-testid="replace-all" onClick={handleReplaceAll}>Replace All</button>
           </div>
         </div>
       )}
@@ -1052,49 +1769,229 @@ ${renderedHtml}
             <div className="editor-pane">
               <textarea
                 ref={textareaRef}
+                data-testid="markdown-editor"
                 className="markdown-editor"
                 value={content}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
+                onClick={handleEditorClick}
                 onPaste={handlePaste}
                 onDrop={handleDrop}
                 onDragOver={handleDragOver}
+                onSelect={handleEditorSelect}
                 placeholder="Start writing your markdown here..."
                 spellCheck={false}
                 style={{ fontSize: `${fontSize}px` }}
               />
+              {slashMenu && (
+                <div className="slash-menu" data-testid="slash-menu">
+                  <div className="slash-menu-header">输入 `/` 快速插入</div>
+                  {filteredSlashCommands.length > 0 ? (
+                    filteredSlashCommands.map((command, index) => (
+                      <button
+                        key={command.id}
+                        type="button"
+                        data-testid={`slash-command-${command.id}`}
+                        className={`slash-menu-item ${index === selectedSlashIndex ? 'active' : ''}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          applySlashCommand(command);
+                        }}
+                      >
+                        <span className="slash-menu-label">{command.label}</span>
+                        <span className="slash-menu-description">{command.description}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="slash-menu-empty">没有匹配的插入项</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
           {(viewMode === 'preview' || viewMode === 'split') && (
             <div className="preview-pane">
               {showTOC && toc && (
-                <div dangerouslySetInnerHTML={{ __html: toc }} />
+                <div data-testid="toc-container" dangerouslySetInnerHTML={{ __html: toc }} />
               )}
               <div
                 ref={previewRef}
+                data-testid="markdown-preview"
                 className="markdown-body"
                 onClick={handlePreviewClick}
                 onChange={handlePreviewChange}
+                onDoubleClick={handlePreviewDoubleClick}
                 dangerouslySetInnerHTML={{ __html: renderedHtml }}
               />
             </div>
           )}
         </div>
       </div>
-      
-      {currentFilePath && (
-        <div className="status-bar">
-          <span className="file-path">{currentFilePath}</span>
-          <span className="view-mode-label">
-            {viewMode === 'editor' && 'Editor Only'}
-            {viewMode === 'split' && 'Split View'}
-            {viewMode === 'preview' && 'Preview Only'}
-          </span>
-          <span className="history-label">
-            History: {historyIndex + 1}/{history.length}
-          </span>
+
+      {showTableStudio && (
+        <div className="table-studio" data-testid="table-studio">
+          <div className="table-studio-header">
+            <div>
+              <h3>表格工作台</h3>
+              <p>可视化编辑表头和单元格，插入新表格或覆盖当前光标所在的 Markdown 表格。</p>
+            </div>
+            <div className="table-studio-actions">
+              <button data-testid="table-import-current" type="button" className="toolbar-btn" onClick={loadTableFromDocument}>
+                导入当前表格
+              </button>
+              <button data-testid="table-apply" type="button" className="toolbar-btn" onClick={applyTableToDocument}>
+                {tableSelection ? '更新文档表格' : '插入表格'}
+              </button>
+              <button data-testid="table-close" type="button" className="toolbar-btn" onClick={() => setShowTableStudio(false)}>
+                关闭
+              </button>
+            </div>
+          </div>
+
+          <div className="table-studio-toolbar">
+            <button data-testid="table-add-row" type="button" className="toolbar-btn" onClick={addTableRow}>加一行</button>
+            <button data-testid="table-remove-row" type="button" className="toolbar-btn" onClick={removeTableRow}>减一行</button>
+            <button data-testid="table-add-column" type="button" className="toolbar-btn" onClick={addTableColumn}>加一列</button>
+            <button data-testid="table-remove-column" type="button" className="toolbar-btn" onClick={removeTableColumn}>减一列</button>
+            <button data-testid="table-reset" type="button" className="toolbar-btn" onClick={() => setTableGrid(createTableGrid(3, 3))}>重置</button>
+          </div>
+
+          <div className="table-studio-grid" data-testid="table-studio-grid">
+            <table className="table-studio-table" data-testid="table-studio-table">
+              <tbody>
+                {tableGrid.map((row, rowIndex) => (
+                  <tr key={`row-${rowIndex}`}>
+                    {row.map((cell, columnIndex) => (
+                      <td key={`cell-${rowIndex}-${columnIndex}`}>
+                        <input
+                          data-testid={`table-cell-${rowIndex}-${columnIndex}`}
+                          className={`table-studio-input ${rowIndex === 0 ? 'header-cell' : ''}`}
+                          value={cell}
+                          onChange={(e) => handleTableCellChange(rowIndex, columnIndex, e.target.value)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
+
+      <button
+        data-testid="toggle-flowchart-studio"
+        className="flowchart-studio-toggle"
+        type="button"
+        onClick={() => setShowFlowchartStudio((current) => !current)}
+      >
+        {showFlowchartStudio ? '关闭流程图工作台' : '打开流程图工作台'}
+      </button>
+
+      {showFlowchartStudio && (
+        <div className="flowchart-studio" data-testid="flowchart-studio">
+          <div className="flowchart-studio-header">
+            <div>
+              <h3>流程图工作台</h3>
+              <p>本地编写 Mermaid 流程图，使用模板和组件库，插入文档或单独导出 SVG。</p>
+            </div>
+            <div className="flowchart-studio-actions">
+              <button data-testid="flowchart-insert" type="button" className="toolbar-btn" onClick={() => insertAtSelection(`\`\`\`mermaid\n${flowchartSource}\`\`\`\n`)}>
+                插入文档
+              </button>
+              <button data-testid="flowchart-export-svg" type="button" className="toolbar-btn" onClick={() => exportSvg(flowchartSvg, 'flowchart.svg')} disabled={!flowchartSvg}>
+                导出 SVG
+              </button>
+            </div>
+          </div>
+
+          <div className="flowchart-template-grid" data-testid="flowchart-template-grid">
+            {flowchartTemplates.map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                data-testid={`flowchart-template-${template.id}`}
+                className="flowchart-template-card"
+                onClick={() => setFlowchartSource(template.source)}
+              >
+                <span className="flowchart-template-title">{template.label}</span>
+                <span className="flowchart-template-caption">加载模板</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="flowchart-component-bar" data-testid="flowchart-component-bar">
+            <button data-testid="flowchart-snippet-process" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    NodeA[Process Step]')}>
+              处理块
+            </button>
+            <button data-testid="flowchart-snippet-decision" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    Decision{Decision?}')}>
+              判断块
+            </button>
+            <button data-testid="flowchart-snippet-start" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    Start([Start])')}>
+              开始/结束
+            </button>
+            <button data-testid="flowchart-snippet-subgraph" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    subgraph SubProcess[Sub Process]\n        Step1[Task]\n    end')}>
+              子流程
+            </button>
+            <button data-testid="flowchart-snippet-link" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    NodeA --> NodeB')}>
+              连线
+            </button>
+            <button data-testid="flowchart-snippet-database" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    DB[(Database)]')}>
+              数据库
+            </button>
+            <button data-testid="flowchart-snippet-queue" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    Queue[[Queue]]')}>
+              队列
+            </button>
+            <button data-testid="flowchart-snippet-io" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    Note[/Manual Input/]')}>
+              输入输出
+            </button>
+            <button data-testid="flowchart-snippet-service" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    Service{{Service}}')}>
+              服务
+            </button>
+            <button data-testid="flowchart-snippet-dashed" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    NodeA -.-> NodeB')}>
+              虚线
+            </button>
+            <button data-testid="flowchart-snippet-conditional" type="button" className="toolbar-btn" onClick={() => insertFlowchartSnippet('    NodeA -->|通过| NodeB')}>
+              条件线
+            </button>
+          </div>
+
+          <div className="flowchart-studio-layout">
+            <textarea
+              data-testid="flowchart-editor"
+              className="flowchart-editor"
+              value={flowchartSource}
+              onChange={(e) => setFlowchartSource(e.target.value)}
+              spellCheck={false}
+            />
+            <div className="flowchart-preview" data-testid="flowchart-preview">
+              {flowchartError ? (
+                <div className="flowchart-error">{flowchartError}</div>
+              ) : (
+                <div dangerouslySetInnerHTML={{ __html: flowchartSvg }} />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      
+      <div className="status-bar">
+        <span className="file-path">{currentFilePath || 'Untitled draft'}</span>
+        <span className="autosave-label">
+          {autosaveState === 'saving' && 'Saving...'}
+          {autosaveState === 'saved' && (lastAutosaveLabel || (currentFilePath ? '已自动保存到文件' : '草稿已保存在本地'))}
+          {autosaveState === 'error' && '自动保存失败，请立即手动保存'}
+          {autosaveState === 'idle' && (currentFilePath ? '等待保存' : '未命名文档')}
+        </span>
+        <span className="view-mode-label">
+          {viewMode === 'editor' && 'Editor Only'}
+          {viewMode === 'split' && 'Split View'}
+          {viewMode === 'preview' && 'Preview Only'}
+        </span>
+        <span className="history-label">
+          History: {historyIndex + 1}/{history.length}
+        </span>
+      </div>
     </div>
   );
 }

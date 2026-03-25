@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:smoke": "vitest run",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:3000 && electron . --dev\"",
     "electron:build": "vite build && electron-builder",
     "electron:build:mac": "vite build && electron-builder --mac",
@@ -32,22 +33,20 @@
       ]
     },
     "win": {
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         },
         {
           "target": "portable",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
-        },
-        "zip"
+        }
       ]
     },
     "nsis": {
@@ -85,6 +84,9 @@
     }
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/js-yaml": "^4.0.9",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^25.5.0",
@@ -95,8 +97,10 @@
     "concurrently": "^9.2.1",
     "electron": "^41.0.3",
     "electron-builder": "^26.8.1",
+    "jsdom": "^29.0.1",
     "typescript": "^5.9.3",
     "vite": "^8.0.1",
+    "vitest": "^4.1.1",
     "wait-on": "^9.0.4"
   },
   "dependencies": {
